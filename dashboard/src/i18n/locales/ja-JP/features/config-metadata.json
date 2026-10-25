@@ -944,6 +944,23 @@
         "description": "個別メッセージを有効にする",
         "hint": "既定では無効です。有効にしても AstrBot のアクセス制御と起動ルールが適用されます。"
       },
+      "wechat_use_cli_path": {
+        "description": "ローカル wechat-use CLI のパス",
+        "hint": "auto で自動検出。メディア送信、メンション、音声、高度な検索には Bridge と同じ管理対象アカウントのローカル CLI が必要です。"
+      },
+      "wechat_use_audio_mode": {
+        "description": "音声メッセージの処理",
+        "hint": "wechat_use は既存の Whisper を使用し、astrbot は WAV を AstrBot STT に渡します。off では音声を取得しません。",
+        "labels": [
+          "ローカル Whisper 文字起こし",
+          "AstrBot STT プロバイダー",
+          "音声通知のみ"
+        ]
+      },
+      "wechat_use_quote_fallback": {
+        "description": "引用を明示したテキストに変換",
+        "hint": "ネイティブ引用送信は未対応です。有効にすると引用を示すテキストを送り、無効の場合は送信を拒否します。"
+      },
       "mattermost_url": {
         "description": "Mattermost URL",
         "hint": "Mattermost サービスのアドレスです。例: https://chat.example.com。"

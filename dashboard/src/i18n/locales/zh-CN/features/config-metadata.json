@@ -864,6 +864,23 @@
         "description": "接收和回复私聊",
         "hint": "默认关闭；开启后仍受 AstrBot 访问控制和唤醒规则约束。"
       },
+      "wechat_use_cli_path": {
+        "description": "本机 wechat-use CLI 路径",
+        "hint": "auto 自动发现。媒体发送、提及、语音和高级查询需要与 Bridge 同机的 CLI，并核验同一账号绑定。"
+      },
+      "wechat_use_audio_mode": {
+        "description": "语音消息处理",
+        "hint": "wechat_use 使用已安装的 Whisper；astrbot 将 WAV 交给 AstrBot 语音识别；off 不取语音。",
+        "labels": [
+          "本地 Whisper 转写",
+          "AstrBot STT 提供商",
+          "仅保留语音通知"
+        ]
+      },
+      "wechat_use_quote_fallback": {
+        "description": "引用回复降级为标注文字",
+        "hint": "底层未提供原生引用发送；开启时发送带 [引用] 标记的文字，关闭时明确拒绝。"
+      },
       "mattermost_url": {
         "description": "Mattermost URL",
         "hint": "Mattermost 服务地址，例如 https://chat.example.com。"

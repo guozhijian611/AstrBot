@@ -564,6 +564,9 @@ CONFIG_METADATA_2 = {
                         "wechat_use_group_ids": [],
                         "wechat_use_require_mention": True,
                         "wechat_use_private_enabled": False,
+                        "wechat_use_cli_path": "auto",
+                        "wechat_use_audio_mode": "wechat_use",
+                        "wechat_use_quote_fallback": True,
                     },
                     # "WebChat": {
                     #     "id": "webchat",
@@ -855,6 +858,27 @@ CONFIG_METADATA_2 = {
                         "description": "接收和回复私聊",
                         "type": "bool",
                         "hint": "默认关闭；开启后仍受 AstrBot 的访问控制和唤醒规则约束。",
+                    },
+                    "wechat_use_cli_path": {
+                        "description": "本机 wechat-use CLI 路径",
+                        "type": "string",
+                        "hint": "auto 自动发现；图片/文件发送、提及、语音和高级查询需与 Bridge 同机的 CLI，并核验同一账号绑定。",
+                    },
+                    "wechat_use_audio_mode": {
+                        "description": "语音消息处理",
+                        "type": "string",
+                        "options": ["wechat_use", "astrbot", "off"],
+                        "labels": [
+                            "本地 Whisper 转写",
+                            "AstrBot STT 提供商",
+                            "仅保留语音通知",
+                        ],
+                        "hint": "wechat_use 使用已安装的 Whisper；astrbot 将解码后的 WAV 交给 AstrBot 语音识别设置；off 不取语音。",
+                    },
+                    "wechat_use_quote_fallback": {
+                        "description": "引用回复降级为标注文字",
+                        "type": "bool",
+                        "hint": "底层未提供原生引用发送。开启后发送带 [引用] 标记的文字；关闭时明确拒绝，不假装发送原生引用。",
                     },
                     "mattermost_bot_token": {
                         "description": "Mattermost Bot Token",

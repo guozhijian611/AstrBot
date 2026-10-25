@@ -843,6 +843,23 @@
         "description": "Enable private messages",
         "hint": "Disabled by default. AstrBot access controls and wake rules still apply."
       },
+      "wechat_use_cli_path": {
+        "description": "Local wechat-use CLI path",
+        "hint": "auto discovers the CLI. Media sending, mentions, voice and advanced queries require the same local managed account as the loopback Bridge."
+      },
+      "wechat_use_audio_mode": {
+        "description": "Voice message processing",
+        "hint": "wechat_use uses installed Whisper; astrbot supplies decoded WAV to AstrBot STT; off leaves a notification without fetching audio.",
+        "labels": [
+          "Local Whisper transcription",
+          "AstrBot STT provider",
+          "Voice notifications only"
+        ]
+      },
+      "wechat_use_quote_fallback": {
+        "description": "Use labeled text for quoted replies",
+        "hint": "Native quoted sending is unavailable upstream. Enable an explicit [quote] text fallback, or reject quoted sending when disabled."
+      },
       "mattermost_url": {
         "description": "Mattermost URL",
         "hint": "Mattermost service URL, for example https://chat.example.com."

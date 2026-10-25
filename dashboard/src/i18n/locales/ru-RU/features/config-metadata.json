@@ -948,6 +948,23 @@
               "description": "Включить личные сообщения",
               "hint": "По умолчанию выключено. Правила доступа и активации AstrBot продолжают действовать."
             },
+            "wechat_use_cli_path": {
+              "description": "Путь к локальному CLI wechat-use",
+              "hint": "auto выполняет поиск CLI. Отправка медиа, упоминания, голос и расширенные запросы требуют того же локального аккаунта, что и Bridge."
+            },
+            "wechat_use_audio_mode": {
+              "description": "Обработка голосовых сообщений",
+              "hint": "wechat_use использует установленный Whisper; astrbot передаёт WAV в AstrBot STT; off сохраняет только уведомление.",
+              "labels": [
+                "Локальная расшифровка Whisper",
+                "Провайдер AstrBot STT",
+                "Только уведомления о голосе"
+              ]
+            },
+            "wechat_use_quote_fallback": {
+              "description": "Явная текстовая замена цитат",
+              "hint": "Нативная отправка цитат не поддерживается. Включите текст с пометкой цитаты или отключите для явного отказа."
+            },
             "mattermost_url": {
                 "description": "URL Mattermost",
                 "hint": "Адрес сервиса Mattermost, например https://chat.example.com."

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -11,7 +12,7 @@ from yarl import URL
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import At, Plain
+from astrbot.api.message_components import At, Node, Plain, Reply, Share
 from astrbot.api.platform import (
     AstrBotMessage,
     Group,
@@ -24,6 +25,8 @@ from astrbot.api.platform import (
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .client import WechatUseClient
+from .outbound import prepare_outbound
 from .wechat_use_event import WechatUseMessageEvent
 
 
@@ -90,12 +93,13 @@ class WechatUseAdapter(Platform):
         self._running = False
         self._started_at = int(time.time())
         self._cursor = self._started_at
+        self.client = WechatUseClient(self)
 
     def meta(self) -> PlatformMetadata:
         return self.metadata
 
-    def get_client(self) -> "WechatUseAdapter":
-        return self
+    def get_client(self) -> WechatUseClient:
+        return self.client
 
     async def initialize(self) -> None:
         """Open the adapter's own journal and HTTP connection.
@@ -115,6 +119,14 @@ class WechatUseAdapter(Platform):
             "request_id TEXT PRIMARY KEY, recipient TEXT, status TEXT, "
             "bridge_request_id TEXT, created_at INTEGER);"
         )
+        # Never assign today's account to legacy attempts with unknown ownership.
+        async with self._db.execute("PRAGMA table_info(submissions)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        for name in ("account", "kind"):
+            if name not in columns:
+                await self._db.execute(
+                    f"ALTER TABLE submissions ADD COLUMN {name} TEXT"
+                )
         await self._db.commit()
         headers = {}
         if token := self.config.get("wechat_use_bridge_token"):
@@ -244,7 +256,11 @@ class WechatUseAdapter(Platform):
                 # Claim before enqueueing: crashes cannot replay a possible reply.
                 await self._db.commit()
                 if result.rowcount:
-                    self.commit_event(self.create_event(message))
+                    paths = await self.client.enrich_message(message)
+                    event = self.create_event(message)
+                    for path in paths:
+                        event.track_temporary_local_file(path)
+                    self.commit_event(event)
                 await result.close()
             timestamp = row.get("create_time")
             if isinstance(timestamp, int) and timestamp <= time.time() + 30:
@@ -253,7 +269,7 @@ class WechatUseAdapter(Platform):
         self._cursor = cursor
 
     def convert_message(self, row: dict) -> AstrBotMessage | None:
-        """Convert fresh, authorized text messages using structured mention data.
+        """Convert fresh, authorized messages using structured message metadata.
 
         Args:
             row: One native Bridge message row.
@@ -279,7 +295,6 @@ class WechatUseAdapter(Platform):
             not isinstance(timestamp, int)
             or timestamp < max(self._started_at, time.time() - 300)
             or timestamp > time.time() + 30
-            or row.get("message_kind") != "text"
         ):
             return None
         group = chat.endswith("@chatroom")
@@ -289,9 +304,17 @@ class WechatUseAdapter(Platform):
                 return None
         elif not self.private_enabled:
             return None
-        text = row.get("display_text") or row.get("message_content")
+        kind = row.get("message_kind", "unknown")
+        if not isinstance(kind, str):
+            return None
+        text = row.get("display_text")
+        if not isinstance(text, str) or not text.strip():
+            text = row.get("message_content") if kind == "text" else f"[{kind}]"
         if not isinstance(text, str) or not text.strip():
             return None
+        # Never feed media XML, encrypted CDN parameters or AES keys to a model.
+        if kind != "text" and text.lstrip().startswith("<"):
+            text = f"[{kind}]"
         # Python retains all digits of native JSON integer IDs, unlike JS Number.
         server_id = row.get("server_id_str") or row.get("server_id")
         if server_id and str(server_id).isdigit() and int(server_id) > 0:
@@ -312,9 +335,92 @@ class WechatUseAdapter(Platform):
         message.timestamp = timestamp
         message.group = Group(chat, row.get("chat_display_name")) if group else None
         message.message = [Plain(text)]
+        refer = row.get("refer")
+        if isinstance(refer, dict):
+            quoted_text = str(refer.get("content") or "")
+            if quoted_text.lstrip().startswith("<"):
+                quoted_text = "[引用媒体消息]"
+            quote_id = refer.get("svrId") or refer.get("svr_id")
+            if quote_id is not None:
+                message.message.insert(
+                    0,
+                    Reply(
+                        id=str(quote_id),
+                        sender_id=refer.get("fromUser") or refer.get("from_user") or "",
+                        sender_nickname=refer.get("displayName")
+                        or refer.get("display_name")
+                        or "",
+                        message_str=quoted_text,
+                        chain=[Plain(quoted_text)],
+                    ),
+                )
+        link = row.get("url_link")
+        if isinstance(link, dict) and isinstance(link.get("url"), str):
+            if link["url"].startswith(("http://", "https://")):
+                message.message.append(
+                    Share(
+                        url=link["url"],
+                        title=str(link.get("title") or "链接"),
+                        content=str(link.get("description") or ""),
+                    )
+                )
+                message.message.append(
+                    Plain(f"\n{link.get('title') or '链接'} {link['url']}")
+                )
+        mini = row.get("mini_program")
+        if isinstance(mini, dict):
+            message.message.append(
+                Plain(
+                    f"\n[小程序] {mini.get('title') or ''} "
+                    f"appId={mini.get('app_id') or mini.get('appId') or ''} "
+                    f"path={mini.get('page_path') or mini.get('pagePath') or ''}"
+                )
+            )
+        forwarded = row.get("forwarded_messages")
+        if isinstance(forwarded, list):
+            for item in forwarded[:50]:
+                if isinstance(item, dict):
+                    content = str(
+                        item.get("display_text") or item.get("content") or "[媒体]"
+                    )
+                    if content.lstrip().startswith("<"):
+                        content = "[转发媒体消息]"
+                    message.message.append(
+                        Node(
+                            name=str(
+                                item.get("sender_display_name")
+                                or item.get("display_name")
+                                or ""
+                            ),
+                            content=[Plain(content)],
+                        )
+                    )
+        media = row.get("media")
+        if kind in {"file", "attachment", "video"} and isinstance(media, dict):
+            name = (
+                media.get("filename")
+                or media.get("file_name")
+                or media.get("name")
+                or kind
+            )
+            message.message.append(
+                Plain(f"\n[附件] {name}（当前 runtime 未提供文件下载接口）")
+            )
+        if kind in {"system", "recalled", "recall", "transfer", "red_envelope"}:
+            # Deliver notifications to plugins without treating them as private chat prompts.
+            message.type = MessageType.OTHER_MESSAGE
+            recall = row.get("recall")
+            if isinstance(recall, dict):
+                message.message.append(
+                    Plain(
+                        f"\n[撤回消息 ID] {recall.get('replacedMsgId') or recall.get('replaced_msg_id') or ''}"
+                    )
+                )
         if group and mentioned:
             message.message.insert(0, At(qq=self.self_id))
-        message.message_str = text
+        message.message_str = "".join(
+            part.text for part in message.message if isinstance(part, Plain)
+        )
         message.raw_message = row
         return message
 
@@ -328,11 +434,11 @@ class WechatUseAdapter(Platform):
         )
 
     async def send_message(self, recipient: str, message: MessageChain) -> dict:
-        """Submit one text message and journal its outcome without retries.
+        """Preflight a complete response, then submit its ordered parts once.
 
         Args:
             recipient: Exact group or contact wxid, never a display name.
-            message: A plain-text message chain.
+            message: Framework response containing text, mentions or media.
 
         Returns:
             Submission metadata; an uncertain outcome is not a delivery receipt.
@@ -341,48 +447,125 @@ class WechatUseAdapter(Platform):
             ValueError: The recipient or message components are unsupported.
             RuntimeError: The Bridge is unavailable or definitively refused the send.
         """
-        if (
-            not recipient
-            or (recipient.endswith("@chatroom") and recipient not in self.group_ids)
-            or (not recipient.endswith("@chatroom") and not self.private_enabled)
-        ):
-            raise ValueError("wechat-use recipient is outside the configured scope")
-        if any(not isinstance(part, Plain) for part in message.chain):
-            raise ValueError("wechat-use currently sends plain text only")
-        text = "".join(part.text for part in message.chain)
-        if not text.strip():
-            raise ValueError("wechat-use cannot send empty text")
+        plan = await prepare_outbound(
+            message,
+            recipient,
+            self.client,
+            bool(self.config.get("wechat_use_quote_fallback", True)),
+        )
+        if any(part["kind"] != "text" or part.get("mentions") for part in plan):
+            self.client.cli_executable()
+        receipts = []
+        for part in plan:
+            receipt = await self._submit_part(recipient, part)
+            receipts.append(receipt)
+            if receipt["status"] == "status_unknown":
+                break  # Do not continue a chain after an indeterminate submission.
+        if len(receipts) == 1 and len(plan) == 1:
+            return receipts[0]
+        return {
+            "status": "status_unknown"
+            if len(receipts) != len(plan)
+            or any(r["status"] == "status_unknown" for r in receipts)
+            else "submitted_unconfirmed"
+            if any(r["status"] == "submitted_unconfirmed" for r in receipts)
+            else "delivered",
+            "parts": receipts,
+            "planned_parts": len(plan),
+            "submitted_parts": len(receipts),
+        }
+
+    async def _submit_part(self, recipient: str, part: dict) -> dict:
+        """Journal a single submission before crossing either transport boundary.
+
+        Args:
+            recipient: Exact allowed recipient.
+            part: Validated text or local media operation.
+
+        Returns:
+            Original request identifiers, outcome and explicit fallback metadata.
+
+        Raises:
+            RuntimeError: The account is not ready or submission is refused.
+        """
         await self.check_health()
         assert self._db is not None and self._http is not None
         request_id = f"astrbot-{uuid.uuid4().hex}"
+        path = None
+        if part["kind"] in {"image", "file"}:
+            directory = self.state_path.parent / "outbox" / request_id
+            directory.mkdir(parents=True, mode=0o700)
+            directory.chmod(0o700)
+            path = directory / part["name"]
+            await asyncio.to_thread(shutil.copyfile, part["path"], path)
+            path.chmod(0o600)
+            # Keep snapshots for unconfirmed/unknown receipts; native uploads can
+            # outlive their CLI invocation and the caller's temporary source file.
         await self._db.execute(
-            "INSERT INTO submissions VALUES (?, ?, ?, NULL, ?)",
-            (request_id, recipient, "status_unknown", int(time.time())),
+            "INSERT INTO submissions (request_id, recipient, status, created_at, account, kind) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                request_id,
+                recipient,
+                "status_unknown",
+                int(time.time()),
+                self.self_id,
+                part["kind"],
+            ),
         )
         await self._db.commit()
         status, bridge_id = "status_unknown", None
         try:
-            async with self._http.post(
-                f"{self.base_url}/send",
-                json={"wxid": recipient, "text": text, "request_id": request_id},
-                allow_redirects=False,
-            ) as response:
-                receipt = await response.json()
-                if isinstance(receipt, dict):
-                    bridge_id = receipt.get("request_id")
-                    reported = receipt.get("status")
-                    if isinstance(reported, str) and reported in {
-                        "delivered",
-                        "delivered_verified",
-                        "submitted_unconfirmed",
-                        "status_unknown",
-                        "failed",
-                        "not_submitted",
-                    }:
-                        status = reported
-                if response.status >= 400 and status not in {"failed", "not_submitted"}:
+            http_status = 200
+            if part["kind"] == "text" and not part.get("mentions"):
+                async with self._http.post(
+                    f"{self.base_url}/send",
+                    json={
+                        "wxid": recipient,
+                        "text": part["text"],
+                        "request_id": request_id,
+                    },
+                    allow_redirects=False,
+                ) as response:
+                    http_status = response.status
+                    receipt = await response.json()
+            else:
+                args = [
+                    "send",
+                    "--recipient",
+                    recipient,
+                    "--request-id",
+                    request_id,
+                    "--json",
+                ]
+                if path is not None:
+                    args.extend(
+                        ["--image" if part["kind"] == "image" else "--file", str(path)]
+                    )
+                else:
+                    args.extend(["--text", part["text"]])
+                    for mention in part.get("mentions", []):
+                        args.extend(["--mention", mention])
+                _, receipt = await self.client.run_cli(*args, timeout=150, check=False)
+            if isinstance(receipt, dict):
+                bridge_id = receipt.get("request_id")
+                reported = receipt.get("status") or receipt.get("submission_state")
+                if isinstance(reported, str) and reported in {
+                    "delivered",
+                    "delivered_verified",
+                    "submitted_unconfirmed",
+                    "status_unknown",
+                    "failed",
+                    "not_submitted",
+                }:
+                    status = reported
+                if receipt.get("expected_account") not in (
+                    None,
+                    self.self_id,
+                ) or receipt.get("expected_recipient") not in (None, recipient):
                     status = "status_unknown"
-        except (aiohttp.ClientError, TimeoutError, ValueError):
+            if http_status >= 400 and status not in {"failed", "not_submitted"}:
+                status = "status_unknown"
+        except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError, OSError):
             # An interrupted POST may already have reached WeChat. Never retry it.
             pass
         finally:
@@ -398,7 +581,60 @@ class WechatUseAdapter(Platform):
             "request_id": request_id,
             "bridge_request_id": bridge_id,
             "status": status,
+            "kind": part["kind"],
+            "fallback": part.get("fallback"),
         }
+
+    async def reconcile_submission(self, request_id: str) -> dict:
+        """Check an original account-bound receipt without ever resubmitting.
+
+        Args:
+            request_id: Adapter request ID recorded in the submission journal.
+
+        Returns:
+            Original CLI receipt, preserving uncertain outcomes.
+
+        Raises:
+            ValueError: The attempt is unknown or has no trustworthy account binding.
+        """
+        if self._db is None:
+            raise RuntimeError("wechat-use adapter is not running")
+        async with self._db.execute(
+            "SELECT bridge_request_id, account, recipient FROM submissions WHERE request_id=?",
+            (request_id,),
+        ) as cursor:
+            attempt = await cursor.fetchone()
+        if attempt is None or attempt[1] != self.self_id:
+            raise ValueError("Unknown or unbound wechat-use submission")
+        _, receipt = await self.client.run_cli(
+            "send-receipt",
+            "--request-id",
+            attempt[0] or request_id,
+            "--expected-account",
+            attempt[1],
+            "--json",
+            check=False,
+        )
+        if isinstance(receipt, dict):
+            if receipt.get("expected_account") not in (None, attempt[1]) or receipt.get(
+                "expected_recipient"
+            ) not in (None, attempt[2]):
+                raise ValueError("Receipt account or recipient binding mismatch")
+            status = receipt.get("status") or receipt.get("submission_state")
+            if status in (
+                "delivered",
+                "delivered_verified",
+                "submitted_unconfirmed",
+                "status_unknown",
+                "failed",
+                "not_submitted",
+            ):
+                await self._db.execute(
+                    "UPDATE submissions SET status=? WHERE request_id=?",
+                    (status, request_id),
+                )
+                await self._db.commit()
+        return receipt
 
     async def send_by_session(
         self, session: MessageSession, message_chain: MessageChain

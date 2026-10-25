@@ -1,6 +1,7 @@
 """Exercise the native Bridge contract without sending any real WeChat messages."""
 
 import asyncio
+import base64
 import copy
 import json
 import time
@@ -14,7 +15,20 @@ import pytest_asyncio
 from aiohttp import web
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
-from astrbot.api.message_components import At, Image, Plain
+from astrbot.api.message_components import (
+    At,
+    AtAll,
+    File,
+    Image,
+    Location,
+    Node,
+    Nodes,
+    Plain,
+    Record,
+    Reply,
+    Share,
+    Video,
+)
 from astrbot.core.config.default import CONFIG_METADATA_2
 from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
 from astrbot.core.platform.manager import PlatformManager
@@ -87,6 +101,9 @@ async def bridge(unused_tcp_port):
         "block_send": asyncio.Event(),
         "hold_send": False,
         "headers": [],
+        "image_requests": [],
+        "query_requests": [],
+        "image_status": 200,
     }
 
     async def health(request):
@@ -122,10 +139,27 @@ async def bridge(unused_tcp_port):
         await response.write_eof()
         return response
 
+    async def image(request):
+        state["image_requests"].append(dict(request.query))
+        return web.Response(
+            body=base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jK4sAAAAASUVORK5CYII="
+            ),
+            content_type="image/png",
+            status=state["image_status"],
+        )
+
+    async def query(request):
+        state["query_requests"].append((request.path, dict(request.query)))
+        return web.json_response({"rows": [], "meta": {"status": "windowed"}})
+
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_post("/send", send)
     app.router.add_get("/messages/stream", stream)
+    app.router.add_get("/image", image)
+    for path in ("/chats", "/contacts", "/unread", "/resolve", "/chat/{chat}/history"):
+        app.router.add_get(path, query)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", unused_tcp_port).start()
@@ -255,7 +289,6 @@ async def test_structured_mention_passes_real_waking_stage(adapter, monkeypatch)
         {"sender_is_self": True, "sender_wxid": SELF},
         {"create_time": 1},
         {"create_time": int(time.time()) + 3600},
-        {"message_kind": "image"},
         {"display_text": "", "message_content": ""},
         {"server_id": 0},
     ],
@@ -449,11 +482,9 @@ async def test_outbound_scope_and_components(adapter, bridge):
             await adapter.send_message(recipient, MessageChain([Plain("fixture")]))
     for chain in [
         MessageChain([]),
-        MessageChain(
-            [Plain("fixture"), Image.fromURL("https://example.invalid/image.png")]
-        ),
+        MessageChain([Plain("fixture"), AtAll()]),
     ]:
-        with pytest.raises(ValueError):
+        with pytest.raises((ValueError, NotImplementedError)):
             await adapter.send_message(ROOM, chain)
     assert bridge["requests"] == []
 
@@ -491,3 +522,593 @@ async def test_proactive_send_and_manager_registration(adapter, bridge, monkeypa
     await manager.load_platform(CONFIG.copy())
     assert isinstance(manager.platform_insts[0], WechatUseAdapter)
     manager._start_platform_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_exact_image_reference_is_fetched_once_and_tracked(adapter, bridge):
+    source = row(
+        message_kind="image",
+        display_text="[图片]",
+        media={
+            "image_ref": {
+                "chatId": ROOM,
+                "localId": "12",
+                "serverId": "9007199254740993123",
+                "md5": "fixture-md5",
+            },
+            "aes_key": "private-key-never-sent-to-model",
+            "cdn_url": "https://example.invalid/encrypted",
+        },
+    )
+    await adapter.handle_batch(batch(source, source))
+    event = adapter._event_queue.get_nowait()
+    images = [p for p in event.get_messages() if isinstance(p, Image)]
+    assert len(images) == 1
+    image_path = await images[0].convert_to_file_path()
+    assert image_path in event._temporary_local_files
+    assert bridge["image_requests"] == [
+        {
+            "chatId": ROOM,
+            "localId": "12",
+            "serverId": "9007199254740993123",
+            "md5": "fixture-md5",
+        }
+    ]
+    assert "private-key" not in event.message_str
+    assert "encrypted" not in event.message_str
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        {"local_path_status": "pending"},
+        {"local_path_status": "unknown"},
+        {"local_path_status": "unavailable"},
+        {
+            "image_ref": {
+                "chatId": "different@chatroom",
+                "localId": "1",
+                "serverId": "2",
+            }
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_unavailable_or_cross_chat_image_never_downloads(adapter, bridge, media):
+    await adapter.handle_batch(batch(row(message_kind="image", media=media)))
+    assert bridge["image_requests"] == []
+    event = adapter._event_queue.get_nowait()
+    assert not any(isinstance(p, Image) for p in event.get_messages())
+
+
+@pytest.mark.asyncio
+async def test_failed_image_keeps_text_without_retry(adapter, bridge):
+    bridge["image_status"] = 409
+    source = row(message_kind="image", display_text="[图片]")
+    await adapter.handle_batch(batch(source, source))
+    event = adapter._event_queue.get_nowait()
+    assert "未重试" in event.message_str
+    assert len(bridge["image_requests"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_media_resolution_is_after_scope_and_age_filter(adapter, bridge):
+    await adapter.handle_batch(
+        batch(
+            row(message_kind="image", chat_username="different@chatroom"),
+            row(message_kind="image", create_time=1),
+            row(message_kind="image", is_mentioned=False),
+        )
+    )
+    assert bridge["image_requests"] == []
+    assert adapter._event_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_native_audio_transcript_enters_model_text(adapter, monkeypatch):
+    cli = AsyncMock(return_value=(0, {"transcript": "A synthetic shipping question"}))
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    await adapter.handle_batch(batch(row(message_kind="audio", display_text="[语音]")))
+    event = adapter._event_queue.get_nowait()
+    assert "A synthetic shipping question" in event.message_str
+    assert not any(isinstance(p, Record) for p in event.get_messages())
+    assert "--include-transcript" in cli.call_args.args
+    assert cli.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_audio_and_off_mode_do_not_invoke_cli(adapter, monkeypatch):
+    cli = AsyncMock()
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    await adapter.handle_batch(
+        batch(row(message_kind="audio", media={"transcript": "cached fixture"}))
+    )
+    assert "cached fixture" in adapter._event_queue.get_nowait().message_str
+    adapter.client.audio_mode = "off"
+    await adapter.handle_batch(batch(row(message_kind="audio", server_id=2)))
+    assert not any(
+        isinstance(c, Record) for c in adapter._event_queue.get_nowait().get_messages()
+    )
+    cli.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_audio_is_decoded_to_wav_for_astrbot_stt(adapter, monkeypatch):
+    import io
+    from pathlib import Path
+
+    import pysilk
+
+    encoded = io.BytesIO()
+    pysilk.encode(io.BytesIO(b"\x00\x00" * 2400), encoded, 24000, 24000, tencent=True)
+
+    async def cli(*args, **kwargs):
+        assert args[:2] == ("audio", "get")
+        Path(args[args.index("--out") + 1]).write_bytes(encoded.getvalue())
+        return 0, {"ok": True}
+
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    adapter.client.audio_mode = "astrbot"
+    await adapter.handle_batch(batch(row(message_kind="voice")))
+    event = adapter._event_queue.get_nowait()
+    record = next(c for c in event.get_messages() if isinstance(c, Record))
+    wav = Path(await record.convert_to_file_path())
+    assert wav.read_bytes().startswith(b"RIFF")
+    assert str(wav) in event._temporary_local_files
+
+
+@pytest.mark.asyncio
+async def test_card_quote_forward_and_attachment_metadata_are_preserved(adapter):
+    await adapter.handle_batch(
+        batch(
+            row(
+                display_text="<msg aeskey='never-render-this' />",
+                message_kind="appmsg",
+                refer={
+                    "svrId": "9007199254740993124",
+                    "fromUser": OTHER,
+                    "displayName": "Fixture",
+                    "content": "quoted fixture",
+                },
+                url_link={
+                    "title": "Fixture link",
+                    "url": "https://example.com/fixture",
+                },
+                mini_program={
+                    "title": "Fixture mini",
+                    "appId": "fixture-app",
+                    "pagePath": "pages/fixture",
+                },
+                forwarded_messages=[
+                    {"display_name": "Fixture", "content": "Forwarded fixture"}
+                ],
+            )
+        )
+    )
+    event = adapter._event_queue.get_nowait()
+    assert any(
+        isinstance(c, Reply) and str(c.id) == "9007199254740993124"
+        for c in event.get_messages()
+    )
+    assert any(isinstance(c, Share) for c in event.get_messages())
+    assert any(isinstance(c, Node) for c in event.get_messages())
+    assert "Fixture mini" in event.message_str
+    assert "never-render-this" not in event.message_str
+    await adapter.handle_batch(
+        batch(
+            row(
+                server_id=2,
+                message_kind="attachment",
+                media={"filename": "fixture.pdf", "local_path": "/etc/passwd"},
+            )
+        )
+    )
+    attachment = adapter._event_queue.get_nowait()
+    assert "fixture.pdf" in attachment.message_str
+    assert not any(isinstance(c, File) for c in attachment.get_messages())
+
+
+@pytest.mark.asyncio
+async def test_recall_is_notification_not_a_private_chat_prompt(adapter):
+    adapter.private_enabled = True
+    await adapter.handle_batch(
+        batch(
+            row(
+                chat_username=OTHER,
+                message_kind="recalled",
+                recall={"replacedMsgId": "fixture-id"},
+            )
+        )
+    )
+    event = adapter._event_queue.get_nowait()
+    assert event.message_obj.type == MessageType.OTHER_MESSAGE
+    assert not event.is_private_chat()
+    assert "fixture-id" in event.message_str
+
+
+@pytest.mark.asyncio
+async def test_rich_chain_preflight_sends_ordered_parts_and_freezes_files(
+    adapter, bridge, monkeypatch, tmp_path
+):
+    from pathlib import Path
+
+    image = tmp_path / "fixture.png"
+    image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jK4sAAAAASUVORK5CYII="
+        )
+    )
+    file = tmp_path / "fixture.txt"
+    file.write_text("immutable fixture")
+    cli = AsyncMock(return_value=(3, {"status": "submitted_unconfirmed"}))
+    monkeypatch.setattr(adapter.client, "cli_executable", lambda: "/fixture/cli")
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    result = await adapter.send_message(
+        ROOM,
+        MessageChain(
+            [
+                Plain("first"),
+                Image.fromFileSystem(image),
+                File(name="report.txt", file=str(file)),
+                Plain("last"),
+            ]
+        ),
+    )
+    assert result["planned_parts"] == result["submitted_parts"] == 4
+    assert result["status"] == "submitted_unconfirmed"
+    assert [r["kind"] for r in result["parts"]] == ["text", "image", "file", "text"]
+    assert [r["text"] for r in bridge["requests"]] == ["first", "last"]
+    assert cli.await_count == 2
+    args = cli.call_args.args
+    snapshot = Path(args[args.index("--file") + 1])
+    file.write_text("changed after submission")
+    assert snapshot.name == "report.txt"
+    assert snapshot.read_text() == "immutable fixture"
+
+
+@pytest.mark.asyncio
+async def test_native_mentions_use_exact_wxids_and_stable_attempt_id(
+    adapter, monkeypatch
+):
+    cli = AsyncMock(return_value=(3, {"submission_state": "submitted_unconfirmed"}))
+    monkeypatch.setattr(adapter.client, "cli_executable", lambda: "/fixture/cli")
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    result = await adapter.send_message(
+        ROOM, MessageChain([At(qq=OTHER), Plain("fixture")])
+    )
+    args = cli.call_args.args
+    assert args[args.index("--mention") + 1] == OTHER
+    assert args[args.index("--request-id") + 1] == result["request_id"]
+    assert result["status"] == "submitted_unconfirmed"
+
+
+@pytest.mark.asyncio
+async def test_cli_unavailable_prevents_partial_text_send(
+    adapter, bridge, monkeypatch, tmp_path
+):
+    path = tmp_path / "fixture.txt"
+    path.write_text("fixture")
+
+    def unavailable():
+        raise RuntimeError("CLI unavailable")
+
+    monkeypatch.setattr(adapter.client, "cli_executable", unavailable)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await adapter.send_message(
+            ROOM,
+            MessageChain(
+                [Plain("must not send"), File(name="fixture.txt", file=str(path))]
+            ),
+        )
+    assert bridge["requests"] == []
+
+
+@pytest.mark.asyncio
+async def test_uncertain_media_stops_remaining_parts_without_retry(
+    adapter, bridge, monkeypatch, tmp_path
+):
+    path = tmp_path / "fixture.txt"
+    path.write_text("fixture")
+    cli = AsyncMock(side_effect=TimeoutError)
+    monkeypatch.setattr(adapter.client, "cli_executable", lambda: "/fixture/cli")
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    result = await adapter.send_message(
+        ROOM,
+        MessageChain(
+            [
+                Plain("first"),
+                File(name="fixture.txt", file=str(path)),
+                Plain("must not send"),
+            ]
+        ),
+    )
+    assert result["status"] == "status_unknown"
+    assert result["submitted_parts"] == 2
+    assert cli.await_count == 1
+    assert [r["text"] for r in bridge["requests"]] == ["first"]
+
+
+@pytest.mark.asyncio
+async def test_quote_fallback_is_explicit_and_can_be_disabled(adapter, bridge):
+    chain = MessageChain(
+        [
+            Reply(
+                id="fixture", message_str="quoted fixture", sender_nickname="Fixture"
+            ),
+            Plain("reply"),
+        ]
+    )
+    await adapter.send_message(ROOM, chain)
+    assert bridge["requests"][0]["text"] == "[引用 Fixture：quoted fixture]\nreply"
+    adapter.config["wechat_use_quote_fallback"] = False
+    with pytest.raises(NotImplementedError, match="Native quoted"):
+        await adapter.send_message(ROOM, chain)
+    assert len(bridge["requests"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_forward_share_and_location_use_honest_text_fallbacks(adapter, bridge):
+    await adapter.send_message(
+        ROOM,
+        MessageChain(
+            [
+                Nodes(
+                    nodes=[Node(name="Fixture", content=[Plain("forwarded fixture")])]
+                ),
+                Share(title="Fixture link", url="https://example.com"),
+                Location(lat=1, lon=2, title="Fixture location"),
+            ]
+        ),
+    )
+    text = bridge["requests"][0]["text"]
+    assert "[转发内容 Fixture]" in text
+    assert "https://example.com" in text
+    assert "[位置]" in text
+
+
+@pytest.mark.asyncio
+async def test_queries_keep_coverage_metadata_and_enforce_scope(adapter, bridge):
+    client = adapter.get_client()
+    result = await client.get_sessions()
+    await client.get_unread()
+    await client.get_contacts("fixture")
+    await client.resolve_recipient("ambiguous fixture")
+    await client.get_history(ROOM, limit=10, since=1, until=2)
+    assert result["meta"]["status"] == "windowed"
+    assert bridge["query_requests"][-1] == (
+        f"/chat/{ROOM}/history",
+        {"limit": "10", "since": "1", "until": "2"},
+    )
+    with pytest.raises(ValueError, match="scope"):
+        await client.get_history("different@chatroom")
+
+
+@pytest.mark.asyncio
+async def test_search_stats_export_and_group_members_use_bound_cli(
+    adapter, monkeypatch
+):
+    cli = AsyncMock(
+        return_value=(0, {"members": [{"wxid": OTHER, "nickname": "Fixture"}]})
+    )
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    group = await adapter.client.get_group(ROOM)
+    assert group.members[0].user_id == OTHER
+    assert group.member_count == 1
+    await adapter.client.search_messages("fixture $(never execute)", ROOM)
+    args = cli.call_args.args
+    assert args[-2:] == ("--", "fixture $(never execute)")
+    await adapter.client.get_stats(ROOM)
+    await adapter.client.export_history(ROOM, "json")
+    assert cli.call_args.args[0] == "export"
+    with pytest.raises(ValueError):
+        await adapter.client.export_history(ROOM, "executable")
+
+
+@pytest.mark.asyncio
+async def test_receipt_reconciliation_keeps_saved_account_and_request(
+    adapter, bridge, monkeypatch
+):
+    original = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    cli = AsyncMock(return_value=(0, {"status": "submitted_unconfirmed"}))
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    result = await adapter.reconcile_submission(original["request_id"])
+    assert result["status"] == "submitted_unconfirmed"
+    args = cli.call_args.args
+    assert args[0] == "send-receipt"
+    assert args[args.index("--request-id") + 1] == "bridge-fixture"
+    assert args[args.index("--expected-account") + 1] == SELF
+    assert len(bridge["requests"]) == 1
+    with pytest.raises(ValueError):
+        await adapter.reconcile_submission("unknown-attempt")
+
+
+@pytest.mark.asyncio
+async def test_group_event_falls_back_without_fabricating_members(adapter, monkeypatch):
+    monkeypatch.setattr(
+        adapter.client, "get_group", AsyncMock(side_effect=RuntimeError("unsupported"))
+    )
+    event = adapter.create_event(adapter.convert_message(row()))
+    group = await event.get_group()
+    assert group.group_id == ROOM
+    assert group.members is None
+    assert event.get_extra("wechat_use_group_members_unavailable") is True
+
+
+@pytest.mark.asyncio
+async def test_active_question_can_resolve_an_exact_older_quoted_image(
+    adapter, bridge, monkeypatch
+):
+    history = AsyncMock(
+        return_value={
+            "rows": [
+                row(
+                    server_id=123,
+                    create_time=1,
+                    message_kind="image",
+                    media={
+                        "image_ref": {"chatId": ROOM, "localId": "7", "serverId": "123"}
+                    },
+                )
+            ]
+        }
+    )
+    monkeypatch.setattr(adapter.client, "get_history", history)
+    await adapter.handle_batch(
+        batch(row(refer={"svrId": "123", "content": "<img aeskey='private'/>"}))
+    )
+    event = adapter._event_queue.get_nowait()
+    assert any(isinstance(c, Image) for c in event.get_messages())
+    assert "private" not in event.message_str
+    assert bridge["image_requests"][0]["serverId"] == "123"
+    history.assert_awaited_once_with(ROOM, limit=100)
+
+
+@pytest.mark.asyncio
+async def test_quoted_media_never_crosses_conversation_boundary(
+    adapter, bridge, monkeypatch
+):
+    monkeypatch.setattr(
+        adapter.client,
+        "get_history",
+        AsyncMock(
+            return_value={
+                "rows": [
+                    row(
+                        server_id=123,
+                        chat_username="different@chatroom",
+                        message_kind="image",
+                    )
+                ]
+            }
+        ),
+    )
+    await adapter.handle_batch(batch(row(refer={"svrId": "123", "content": "<img/>"})))
+    event = adapter._event_queue.get_nowait()
+    assert "引用媒体不可用" in event.message_str
+    assert bridge["image_requests"] == []
+
+
+@pytest.mark.asyncio
+async def test_cli_binding_and_argument_vector_without_shell(
+    adapter, monkeypatch, tmp_path
+):
+    import sys
+    from pathlib import Path
+
+    fake_home = tmp_path / "home"
+    base = fake_home / ".wx-rs"
+    (base / "com_fixture_WeChat").mkdir(parents=True)
+    (base / "managed-wechat.json").write_text(
+        json.dumps({"bundle_id": "com.fixture.WeChat"})
+    )
+    config = base / "com_fixture_WeChat" / "config.json"
+    config.write_text(json.dumps({"account_wxid": SELF + "_abcd"}))
+    executable = tmp_path / "fixture-cli"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json,sys,time\n"
+        "if 'timeout-fixture' in sys.argv: time.sleep(10)\n"
+        "if 'error-fixture' in sys.argv:\n"
+        " print(json.dumps({'error':'source_database_access_paused /private/fixture secret-canary'}));sys.exit(2)\n"
+        "print(json.dumps({'args':sys.argv[1:]}))\n"
+    )
+    executable.chmod(0o700)
+    adapter.client.cli_path = str(executable)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    code, output = await adapter.client.run_cli(
+        "search", "--in", ROOM, "--json", "--", "$(never execute); fixture"
+    )
+    assert code == 0
+    assert output["args"][-1] == "$(never execute); fixture"
+    with pytest.raises(RuntimeError) as unavailable:
+        await adapter.client.run_cli("stats", "error-fixture", "--json")
+    assert str(unavailable.value) == "source_database_access_paused"
+    with pytest.raises(TimeoutError):
+        await adapter.client.run_cli("stats", "timeout-fixture", "--json", timeout=0.02)
+    for args in [("init",), ("audio", "setup"), ("send", "--account", OTHER)]:
+        with pytest.raises(ValueError):
+            await adapter.client.run_cli(*args)
+    config.write_text(json.dumps({"account_wxid": "wxid_different_abcd"}))
+    with pytest.raises(RuntimeError, match="account binding"):
+        adapter.client.cli_executable()
+
+
+def test_remote_bridge_never_uses_local_account_cli(adapter):
+    adapter.base_url = "https://bridge.example.com"
+    with pytest.raises(RuntimeError, match="loopback"):
+        adapter.client.cli_executable()
+
+
+@pytest.mark.asyncio
+async def test_audio_and_video_send_as_explicit_file_fallbacks(
+    adapter, monkeypatch, tmp_path
+):
+    path = tmp_path / "fixture.media"
+    path.write_bytes(b"fixture")
+    monkeypatch.setattr(adapter.client, "cli_executable", lambda: "/fixture/cli")
+    monkeypatch.setattr(
+        adapter.client,
+        "run_cli",
+        AsyncMock(return_value=(3, {"status": "submitted_unconfirmed"})),
+    )
+    monkeypatch.setattr(
+        Record, "convert_to_file_path", AsyncMock(return_value=str(path))
+    )
+    monkeypatch.setattr(
+        Video, "convert_to_file_path", AsyncMock(return_value=str(path))
+    )
+    result = await adapter.send_message(
+        ROOM, MessageChain([Record(file=str(path)), Video(file=str(path))])
+    )
+    assert [r["fallback"] for r in result["parts"]] == [
+        "audio_as_file",
+        "video_as_file",
+    ]
+    assert all(r["kind"] == "file" for r in result["parts"])
+
+
+@pytest.mark.asyncio
+async def test_mismatched_receipt_binding_is_never_reported_as_delivery(
+    adapter, bridge
+):
+    bridge["receipt"].update(
+        {"status": "delivered", "expected_account": "wxid_different"}
+    )
+    result = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    assert result["status"] == "status_unknown"
+
+
+@pytest.mark.asyncio
+async def test_legacy_submission_migration_does_not_invent_an_account(adapter):
+    await adapter._db.execute(
+        "INSERT INTO submissions (request_id, recipient, status, created_at) VALUES (?, ?, ?, ?)",
+        ("legacy-fixture", ROOM, "status_unknown", 1),
+    )
+    await adapter._db.commit()
+    with pytest.raises(ValueError, match="unbound"):
+        await adapter.reconcile_submission("legacy-fixture")
+
+
+@pytest.mark.asyncio
+async def test_upstream_audio_refusal_is_visible_without_private_diagnostics(adapter, monkeypatch):
+    from astrbot.core.platform.sources.wechat_use.client import WechatUseOperationError
+
+    monkeypatch.setattr(adapter.client, "run_cli", AsyncMock(side_effect=WechatUseOperationError("source_database_access_paused")))
+    await adapter.handle_batch(batch(row(message_kind="audio")))
+    event = adapter._event_queue.get_nowait()
+    assert "source_database_access_paused" in event.message_str
+    assert "未重试" in event.message_str
+
+
+def test_literal_xml_in_real_text_is_preserved_and_invalid_kinds_are_skipped(adapter):
+    message = adapter.convert_message(row(display_text="<html>synthetic coding question</html>"))
+    assert message.message_str == "<html>synthetic coding question</html>"
+    assert adapter.convert_message(row(message_kind={"invalid": True})) is None
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_does_not_accept_other_account_receipts(adapter, monkeypatch):
+    original = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    monkeypatch.setattr(adapter.client, "run_cli", AsyncMock(return_value=(0, {"status": "delivered", "expected_account": "wxid_other"})))
+    with pytest.raises(ValueError, match="binding mismatch"):
+        await adapter.reconcile_submission(original["request_id"])
