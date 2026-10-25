@@ -924,6 +924,30 @@
                 "description": "Токен бота",
                 "hint": "Если вы находитесь в материковом Китае, установите прокси или измените api_base в разделе «Другие настройки»."
             },
+            "wechat_use_bridge_url": {
+              "description": "wechat-use Bridge URL",
+              "hint": "Адрес native HTTP Bridge, по умолчанию http://127.0.0.1:18400. Не используйте --shape hermes."
+            },
+            "wechat_use_bridge_token": {
+              "description": "Bridge Bearer Token",
+              "hint": "Требуется только при настройке WECHAT_BRIDGE_BEARER. Это не API-ключ модели и не код активации."
+            },
+            "wechat_use_self_id": {
+              "description": "wxid текущего аккаунта WeChat",
+              "hint": "Обязательный точный wxid аккаунта в выделенном клиенте WeChat, а не его имя."
+            },
+            "wechat_use_group_ids": {
+              "description": "Разрешённые ID групп",
+              "hint": "Точные ID вида xxx@chatroom. Пустой список запрещает все группы. Найдите ID командой wechat-use sessions --json."
+            },
+            "wechat_use_require_mention": {
+              "description": "Отвечать в группе только на упоминание",
+              "hint": "Используется структурированный флаг is_mentioned от Bridge, а не поиск имени в тексте."
+            },
+            "wechat_use_private_enabled": {
+              "description": "Включить личные сообщения",
+              "hint": "По умолчанию выключено. Правила доступа и активации AstrBot продолжают действовать."
+            },
             "mattermost_url": {
                 "description": "URL Mattermost",
                 "hint": "Адрес сервиса Mattermost, например https://chat.example.com."

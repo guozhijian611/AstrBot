@@ -554,6 +554,17 @@ CONFIG_METADATA_2 = {
                         "mattermost_bot_token": "",
                         "mattermost_reconnect_delay": 5.0,
                     },
+                    "WeChat (wechat-use)": {
+                        "id": "wechat_use",
+                        "type": "wechat_use",
+                        "enable": False,
+                        "wechat_use_bridge_url": "http://127.0.0.1:18400",
+                        "wechat_use_bridge_token": "",
+                        "wechat_use_self_id": "",
+                        "wechat_use_group_ids": [],
+                        "wechat_use_require_mention": True,
+                        "wechat_use_private_enabled": False,
+                    },
                     # "WebChat": {
                     #     "id": "webchat",
                     #     "type": "webchat",
@@ -813,6 +824,37 @@ CONFIG_METADATA_2 = {
                         "description": "Mattermost URL",
                         "type": "string",
                         "hint": "Mattermost 服务地址，例如 https://chat.example.com。",
+                    },
+                    "wechat_use_bridge_url": {
+                        "description": "wechat-use Bridge URL",
+                        "type": "string",
+                        "hint": "本地 native HTTP Bridge，默认 http://127.0.0.1:18400。无需重新登录微信，请勿使用 --shape hermes。",
+                    },
+                    "wechat_use_bridge_token": {
+                        "description": "Bridge Bearer Token",
+                        "type": "string",
+                        "secret": True,
+                        "hint": "仅在 Bridge 配置 WECHAT_BRIDGE_BEARER 时填写；不是模型 API 密钥或激活码。",
+                    },
+                    "wechat_use_self_id": {
+                        "description": "当前微信账号 wxid",
+                        "type": "string",
+                        "hint": "必填，工具专用微信已登录账号的精确 wxid，不是昵称。",
+                    },
+                    "wechat_use_group_ids": {
+                        "description": "允许回复的群 ID",
+                        "type": "list",
+                        "hint": "填写精确的 xxx@chatroom；空列表禁止所有群聊。可通过 wechat-use sessions --json 查询。",
+                    },
+                    "wechat_use_require_mention": {
+                        "description": "群聊仅在被 @时回复",
+                        "type": "bool",
+                        "hint": "使用 Bridge 的结构化 is_mentioned 判断，不匹配正文中的昵称。",
+                    },
+                    "wechat_use_private_enabled": {
+                        "description": "接收和回复私聊",
+                        "type": "bool",
+                        "hint": "默认关闭；开启后仍受 AstrBot 的访问控制和唤醒规则约束。",
                     },
                     "mattermost_bot_token": {
                         "description": "Mattermost Bot Token",

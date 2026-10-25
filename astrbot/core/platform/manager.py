@@ -217,6 +217,10 @@ class PlatformManager:
                     from .sources.mattermost.mattermost_adapter import (
                         MattermostPlatformAdapter,  # noqa: F401
                     )
+                case "wechat_use":
+                    from .sources.wechat_use.wechat_use_adapter import (
+                        WechatUseAdapter,  # noqa: F401
+                    )
         except (ImportError, ModuleNotFoundError) as e:
             logger.error(
                 f"Failed to load platform adapter {platform_config['type']}: {e}. "

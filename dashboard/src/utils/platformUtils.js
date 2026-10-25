@@ -18,7 +18,7 @@ export function getPlatformIcon(name) {
     return new URL('@/assets/images/platform_logos/onebot.png', import.meta.url).href
   } else if (name === 'qq_official' || name === 'qq_official_webhook') {
     return new URL('@/assets/images/platform_logos/qq.png', import.meta.url).href
-  } else if (name === 'weixin_oc' || name === 'weixin_oc') {
+  } else if (name === 'weixin_oc' || name === 'wechat_use') {
     return new URL('@/assets/images/platform_logos/wechat.png', import.meta.url).href
   } else if (name === 'wecom' || name === 'wecom_ai_bot') {
     return new URL('@/assets/images/platform_logos/wecom.png', import.meta.url).href
@@ -63,6 +63,7 @@ export function getTutorialLink(platformType) {
     "aiocqhttp": "https://docs.astrbot.app/platform/aiocqhttp.html",
     "wecom": "https://docs.astrbot.app/platform/wecom.html",
     "weixin_oc": "https://docs.astrbot.app/platform/weixin_oc.html",
+    "wechat_use": "https://github.com/guozhijian611/AstrBot/blob/feat/wechat-use-adapter/docs/zh/platform/wechat-use.md",
     "wecom_ai_bot": "https://docs.astrbot.app/platform/wecom_ai_bot.html",
     "lark": "https://docs.astrbot.app/platform/lark.html",
     "telegram": "https://docs.astrbot.app/platform/telegram.html",
@@ -105,6 +106,7 @@ export function getPlatformDescription(template, name) {
 export function getPlatformDisplayName(platformId) {
   const displayNameMap = {
     aiocqhttp: 'aiocqhttp (OneBot v11)',
+    wechat_use: 'wechat_use (WeChat via local Bridge)',
     qq_official: 'qq_official (QQ 官方机器人平台)',
     weixin_official_account: 'weixin_official_account (微信公众号)',
     wecom: 'wecom (企业微信应用)',

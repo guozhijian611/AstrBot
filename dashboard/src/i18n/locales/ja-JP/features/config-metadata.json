@@ -920,6 +920,30 @@
         "description": "Bot Token",
         "hint": "中国本土のネットワーク環境を使用している場合は、`その他の設定` でプロキシを設定するか、api_base を変更してください。"
       },
+      "wechat_use_bridge_url": {
+        "description": "wechat-use Bridge URL",
+        "hint": "native HTTP Bridge の URL。既定値は http://127.0.0.1:18400。--shape hermes は使用しないでください。"
+      },
+      "wechat_use_bridge_token": {
+        "description": "Bridge Bearer Token",
+        "hint": "WECHAT_BRIDGE_BEARER が設定されている場合のみ入力します。モデル API キーやアクティベーションコードとは異なります。"
+      },
+      "wechat_use_self_id": {
+        "description": "ログイン中の WeChat アカウント wxid",
+        "hint": "必須。専用 WeChat クライアントでログインしているアカウントの正確な wxid を入力します。ニックネームではありません。"
+      },
+      "wechat_use_group_ids": {
+        "description": "応答を許可するグループ ID",
+        "hint": "正確な xxx@chatroom ID の一覧。空の場合は全グループを拒否します。wechat-use sessions --json で確認できます。"
+      },
+      "wechat_use_require_mention": {
+        "description": "グループではメンション時のみ応答",
+        "hint": "本文のニックネームではなく、Bridge の構造化 is_mentioned フラグで判定します。"
+      },
+      "wechat_use_private_enabled": {
+        "description": "個別メッセージを有効にする",
+        "hint": "既定では無効です。有効にしても AstrBot のアクセス制御と起動ルールが適用されます。"
+      },
       "mattermost_url": {
         "description": "Mattermost URL",
         "hint": "Mattermost サービスのアドレスです。例: https://chat.example.com。"

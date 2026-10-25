@@ -819,6 +819,30 @@
         "description": "Bot Token",
         "hint": "If you are in mainland China, set a proxy or change api_base in Other Settings."
       },
+      "wechat_use_bridge_url": {
+        "description": "wechat-use Bridge URL",
+        "hint": "Native HTTP Bridge origin, default http://127.0.0.1:18400. Do not use --shape hermes."
+      },
+      "wechat_use_bridge_token": {
+        "description": "Bridge Bearer Token",
+        "hint": "Required only when WECHAT_BRIDGE_BEARER is set. This is not a model API key or activation code."
+      },
+      "wechat_use_self_id": {
+        "description": "Logged-in WeChat account wxid",
+        "hint": "Required: the exact wxid of the account logged into the dedicated WeChat client, not its nickname."
+      },
+      "wechat_use_group_ids": {
+        "description": "Allowed group IDs",
+        "hint": "Exact xxx@chatroom IDs. An empty list denies all groups. Find IDs with wechat-use sessions --json."
+      },
+      "wechat_use_require_mention": {
+        "description": "Require a group mention",
+        "hint": "Use the structured is_mentioned flag from the Bridge, never nickname matching."
+      },
+      "wechat_use_private_enabled": {
+        "description": "Enable private messages",
+        "hint": "Disabled by default. AstrBot access controls and wake rules still apply."
+      },
       "mattermost_url": {
         "description": "Mattermost URL",
         "hint": "Mattermost service URL, for example https://chat.example.com."

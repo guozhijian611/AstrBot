@@ -840,6 +840,30 @@
         "description": "Bot Token",
         "hint": "如果你的网络环境为中国大陆，请在 `其他配置` 处设置代理或更改 api_base。"
       },
+      "wechat_use_bridge_url": {
+        "description": "wechat-use Bridge URL",
+        "hint": "本地 native HTTP Bridge，默认 http://127.0.0.1:18400。请勿使用 --shape hermes。"
+      },
+      "wechat_use_bridge_token": {
+        "description": "Bridge Bearer Token",
+        "hint": "仅在 Bridge 设置 WECHAT_BRIDGE_BEARER 时填写；不是模型 API 密钥或激活码。"
+      },
+      "wechat_use_self_id": {
+        "description": "当前微信账号 wxid",
+        "hint": "必填，工具专用微信已登录账号的精确 wxid，不是昵称。"
+      },
+      "wechat_use_group_ids": {
+        "description": "允许回复的群 ID",
+        "hint": "精确的 xxx@chatroom 列表；留空禁止所有群。通过 wechat-use sessions --json 查询。"
+      },
+      "wechat_use_require_mention": {
+        "description": "群聊仅在被 @时回复",
+        "hint": "使用 Bridge 的结构化 is_mentioned 判断，不匹配正文中的昵称。"
+      },
+      "wechat_use_private_enabled": {
+        "description": "接收和回复私聊",
+        "hint": "默认关闭；开启后仍受 AstrBot 访问控制和唤醒规则约束。"
+      },
       "mattermost_url": {
         "description": "Mattermost URL",
         "hint": "Mattermost 服务地址，例如 https://chat.example.com。"
