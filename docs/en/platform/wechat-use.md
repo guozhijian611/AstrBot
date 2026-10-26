@@ -43,6 +43,7 @@ AstrBot access controls, wake rules and session isolation remain in effect. Run 
 
 ## Behavior and limits
 
+- Receiving requires a ready snapshot. Sending an existing response checks the Bridge, daemon and account, then relies on the native send endpoint to validate its sending configuration and current conditions. Snapshot capture or catch-up alone does not discard a response; native refusals and uncertain outcomes are still never retried.
 - Images use the verified endpoint, never encrypted CDN URLs or media XML. Images are fetched only for in-scope triggered messages and are limited to 32 MiB.
 - Mixed chains are fully preflighted, including local account binding, before ordered submission. Refusal stops sending; an unknown outcome stops remaining parts; accepted unconfirmed parts are not retried. Each part retains its original request ID.
 - Audio/video sending is explicitly represented as file attachments. Unsupported components are rejected before submission. Labeled quote text is not a native quote bubble.

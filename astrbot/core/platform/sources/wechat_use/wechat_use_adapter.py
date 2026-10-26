@@ -141,8 +141,12 @@ class WechatUseAdapter(Platform):
             trust_env=False,
         )
 
-    async def check_health(self) -> dict:
-        """Validate the native Bridge and its current receive readiness.
+    async def check_health(self, *, require_receive_ready: bool = True) -> dict:
+        """Validate the native Bridge and readiness for the intended operation.
+
+        Args:
+            require_receive_ready: Require a complete snapshot before receiving.
+                Native sends validate their own runtime independently of snapshots.
 
         Returns:
             Bridge health metadata.
@@ -169,7 +173,10 @@ class WechatUseAdapter(Platform):
             raise WechatUseHealthError("wechat-use daemon is not ready")
         if health["wechat"].get("account_state") != "ready":
             raise WechatUseHealthError("wechat-use account is not ready")
-        if health["receive_readiness"].get("ready") is not True:
+        if (
+            require_receive_ready
+            and health["receive_readiness"].get("ready") is not True
+        ):
             source = health["receive_readiness"].get("source")
             refusal = (
                 source.get("last_capture_refusal") if isinstance(source, dict) else None
@@ -518,7 +525,9 @@ class WechatUseAdapter(Platform):
         Raises:
             RuntimeError: The account is not ready or submission is refused.
         """
-        await self.check_health()
+        # Snapshot capture can be busy while native sending remains available.
+        # The native send endpoint still enforces its own account and runtime gates.
+        await self.check_health(require_receive_ready=False)
         assert self._db is not None and self._http is not None
         request_id = f"astrbot-{uuid.uuid4().hex}"
         path = None

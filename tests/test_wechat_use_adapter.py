@@ -408,8 +408,54 @@ async def test_health_readiness_and_auth(adapter, bridge):
     assert bridge["headers"][-1] == "Bearer fixture-token"
     bridge["health"]["receive_readiness"]["ready"] = False
     with pytest.raises(RuntimeError, match="not ready"):
+        await adapter.check_health()
+    assert bridge["requests"] == []
+
+
+@pytest.mark.parametrize("native_refusal", [False, True])
+@pytest.mark.asyncio
+async def test_send_during_snapshot_capture_preserves_native_gates(
+    adapter, bridge, native_refusal
+):
+    bridge["health"]["receive_readiness"] = {
+        "ready": False,
+        "state": "catching_up",
+        "consumer": {"reason": "capture_deferred"},
+        "source": {"available": False, "inflight": True},
+    }
+    if native_refusal:
+        bridge["status"] = 409
+        bridge["receipt"] = {
+            "status": "not_submitted",
+            "reason": "native_send_source_unavailable",
+        }
+        with pytest.raises(RuntimeError, match="native_send_source_unavailable"):
+            await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    else:
+        receipt = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+        assert receipt["status"] == "submitted_unconfirmed"
+    assert len(bridge["requests"]) == 1
+    async with adapter._db.execute("SELECT status FROM submissions") as cursor:
+        assert await cursor.fetchone() == (
+            "not_submitted" if native_refusal else "submitted_unconfirmed",
+        )
+    with pytest.raises(RuntimeError, match="receiver is not ready"):
+        await adapter.check_health()
+
+
+@pytest.mark.parametrize("field", ["daemon", "wechat", "receive_readiness"])
+@pytest.mark.asyncio
+async def test_send_still_requires_valid_service_and_account(adapter, bridge, field):
+    bridge["health"][field] = {
+        "daemon": {"alive": False},
+        "wechat": {"account_state": "not_ready"},
+        "receive_readiness": None,
+    }[field]
+    with pytest.raises(RuntimeError):
         await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
     assert bridge["requests"] == []
+    async with adapter._db.execute("SELECT COUNT(*) FROM submissions") as cursor:
+        assert await cursor.fetchone() == (0,)
 
 
 @pytest.mark.parametrize(
