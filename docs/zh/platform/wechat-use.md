@@ -87,6 +87,8 @@ receipt = await event.adapter.reconcile_submission(original_adapter_request_id)
 
 接收端不可用时，管理面板的错误详情及 AstrBot 日志会区分后台、账号和读取故障。`stage=profile_fetch` 表示上游适配资料获取阶段失败，`stage=profile_verify` 表示资料验证阶段失败；阶段值只从固定列表中选取，不写入上游任意文本、账号或凭据。底层详细诊断仍以 `wechat-use` 官方命令和本机 `~/.wx-rs/wechatd.log` 为准。恢复后适配器自动重连，不补发旧消息。
 
+发送日志和适配器自有记录保留固定的拒绝原因码（如 `native_send_source_unavailable`）。CLI 的嵌套 `receipt` 也会核验账号、收件人和原请求，再更新提交状态；明确的 `not_submitted` 不再误标成未知，也不会自动补发。
+
 ## 验证
 
 ```bash

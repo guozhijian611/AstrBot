@@ -569,6 +569,121 @@ async def test_definitive_refusal_is_recorded(adapter, bridge):
 
 
 @pytest.mark.asyncio
+async def test_nested_native_refusal_is_recorded_with_safe_reason(adapter, bridge):
+    bridge["receipt"] = {
+        "account_id": SELF,
+        "receipt": {
+            "request_id": "native-fixture",
+            "account_id": SELF,
+            "wxid": ROOM,
+            "submission_state": "not_submitted",
+            "receipt_state": "not_submitted",
+            "reason": "native_send_source_unavailable",
+        },
+    }
+    bridge["status"] = 503
+    with pytest.raises(RuntimeError, match="native_send_source_unavailable"):
+        await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    async with adapter._db.execute(
+        "SELECT status, reason, bridge_request_id FROM submissions"
+    ) as cursor:
+        assert await cursor.fetchone() == (
+            "not_submitted",
+            "native_send_source_unavailable",
+            "native-fixture",
+        )
+    assert len(bridge["requests"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_refusal_reason_does_not_leak(adapter, bridge):
+    bridge["receipt"] = {
+        "receipt": {
+            "submission_state": "not_submitted",
+            "reason": "private-token-or-path",
+        }
+    }
+    with pytest.raises(RuntimeError) as error:
+        await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    assert "private-token-or-path" not in str(error.value)
+    async with adapter._db.execute("SELECT reason FROM submissions") as cursor:
+        assert await cursor.fetchone() == (None,)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("account_id", "wxid_other"), ("wxid", "other@chatroom")]
+)
+@pytest.mark.asyncio
+async def test_nested_submission_binding_is_checked(adapter, bridge, field, value):
+    bridge["receipt"] = {"receipt": {"submission_state": "delivered", field: value}}
+    result = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    assert result["status"] == "status_unknown"
+
+
+@pytest.mark.asyncio
+async def test_nested_original_receipt_reconciles_without_resending(
+    adapter, bridge, monkeypatch
+):
+    original = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    cli = AsyncMock(
+        return_value=(
+            0,
+            {
+                "account_id": SELF,
+                "request_id": "bridge-fixture",
+                "receipt": {
+                    "request_id": "bridge-fixture",
+                    "account_id": SELF,
+                    "wxid": ROOM,
+                    "submission_state": "not_submitted",
+                    "reason": "native_send_source_unavailable",
+                },
+            },
+        )
+    )
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    receipt = await adapter.reconcile_submission(original["request_id"])
+    assert receipt["status"] == "not_submitted"
+    async with adapter._db.execute("SELECT status, reason FROM submissions") as cursor:
+        assert await cursor.fetchone() == (
+            "not_submitted",
+            "native_send_source_unavailable",
+        )
+    assert cli.call_args.args[0] == "send-receipt"
+    assert len(bridge["requests"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("account_id", "wxid_other"),
+        ("wxid", "other@chatroom"),
+        ("request_id", "different-request"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_nested_original_receipt_binding_cannot_update_journal(
+    adapter, bridge, monkeypatch, field, value
+):
+    original = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    monkeypatch.setattr(
+        adapter.client,
+        "run_cli",
+        AsyncMock(
+            return_value=(
+                0,
+                {"receipt": {"submission_state": "delivered", field: value}},
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="binding mismatch"):
+        await adapter.reconcile_submission(original["request_id"])
+    async with adapter._db.execute("SELECT status FROM submissions") as cursor:
+        assert await cursor.fetchone() == ("submitted_unconfirmed",)
+    assert len(bridge["requests"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_outbound_scope_and_components(adapter, bridge):
     for recipient in [OTHER, "different@chatroom", ""]:
         with pytest.raises(ValueError, match="scope"):

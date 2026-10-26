@@ -126,7 +126,7 @@ class WechatUseAdapter(Platform):
         # Never assign today's account to legacy attempts with unknown ownership.
         async with self._db.execute("PRAGMA table_info(submissions)") as cursor:
             columns = {row[1] for row in await cursor.fetchall()}
-        for name in ("account", "kind"):
+        for name in ("account", "kind", "reason"):
             if name not in columns:
                 await self._db.execute(
                     f"ALTER TABLE submissions ADD COLUMN {name} TEXT"
@@ -543,7 +543,7 @@ class WechatUseAdapter(Platform):
             ),
         )
         await self._db.commit()
-        status, bridge_id = "status_unknown", None
+        status, bridge_id, reason = "status_unknown", None, None
         try:
             http_status = 200
             if part["kind"] == "text" and not part.get("mentions"):
@@ -577,22 +577,46 @@ class WechatUseAdapter(Platform):
                         args.extend(["--mention", mention])
                 _, receipt = await self.client.run_cli(*args, timeout=150, check=False)
             if isinstance(receipt, dict):
-                bridge_id = receipt.get("request_id")
-                reported = receipt.get("status") or receipt.get("submission_state")
-                if isinstance(reported, str) and reported in {
-                    "delivered",
-                    "delivered_verified",
-                    "submitted_unconfirmed",
-                    "status_unknown",
-                    "failed",
-                    "not_submitted",
-                }:
-                    status = reported
-                if receipt.get("expected_account") not in (
-                    None,
-                    self.self_id,
-                ) or receipt.get("expected_recipient") not in (None, recipient):
-                    status = "status_unknown"
+                layers = [receipt]
+                if isinstance(receipt.get("receipt"), dict):
+                    layers.append(receipt["receipt"])
+                statuses = set()
+                bound = True
+                for layer in layers:
+                    if layer.get("request_id"):
+                        bridge_id = layer["request_id"]
+                    reported = (
+                        layer.get("status")
+                        or layer.get("submission_state")
+                        or layer.get("receipt_state")
+                    )
+                    if isinstance(reported, str) and reported in {
+                        "delivered",
+                        "delivered_verified",
+                        "submitted_unconfirmed",
+                        "status_unknown",
+                        "failed",
+                        "not_submitted",
+                    }:
+                        statuses.add(reported)
+                    bound &= all(
+                        layer.get(k) in (None, self.self_id)
+                        for k in ("expected_account", "account_id")
+                    )
+                    bound &= all(
+                        layer.get(k) in (None, recipient)
+                        for k in ("expected_recipient", "wxid")
+                    )
+                    if layer.get("reason") in (
+                        "native_send_source_unavailable",
+                        "wechat_in_foreground",
+                        "background_navigation_unavailable",
+                    ):
+                        reason = layer["reason"]
+                if bound and len(statuses) == 1:
+                    status = statuses.pop()
+                else:
+                    reason = None
             if http_status >= 400 and status not in {"failed", "not_submitted"}:
                 status = "status_unknown"
         except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError, OSError):
@@ -600,18 +624,26 @@ class WechatUseAdapter(Platform):
             pass
         finally:
             await self._db.execute(
-                "UPDATE submissions SET status=?, bridge_request_id=? WHERE request_id=?",
-                (status, str(bridge_id) if bridge_id else None, request_id),
+                "UPDATE submissions SET status=?, bridge_request_id=?, reason=? WHERE request_id=?",
+                (status, str(bridge_id) if bridge_id else None, reason, request_id),
             )
             await self._db.commit()
-        logger.info("wechat-use submission %s: %s", request_id, status)
+        logger.info(
+            "wechat-use submission %s: %s (reason=%s)",
+            request_id,
+            status,
+            reason or "unspecified",
+        )
         if status in {"failed", "not_submitted"}:
-            raise RuntimeError(f"wechat-use submission refused ({request_id})")
+            raise RuntimeError(
+                f"wechat-use submission refused ({request_id}; reason={reason or 'unspecified'})"
+            )
         return {
             "request_id": request_id,
             "bridge_request_id": bridge_id,
             "status": status,
             "kind": part["kind"],
+            "reason": reason,
             "fallback": part.get("fallback"),
         }
 
@@ -646,24 +678,50 @@ class WechatUseAdapter(Platform):
             check=False,
         )
         if isinstance(receipt, dict):
-            if receipt.get("expected_account") not in (None, attempt[1]) or receipt.get(
-                "expected_recipient"
-            ) not in (None, attempt[2]):
-                raise ValueError("Receipt account or recipient binding mismatch")
-            status = receipt.get("status") or receipt.get("submission_state")
-            if status in (
-                "delivered",
-                "delivered_verified",
-                "submitted_unconfirmed",
-                "status_unknown",
-                "failed",
-                "not_submitted",
-            ):
+            layers = [receipt]
+            if isinstance(receipt.get("receipt"), dict):
+                layers.append(receipt["receipt"])
+            statuses = set()
+            reason = None
+            for layer in layers:
+                if any(
+                    layer.get(k) not in (None, attempt[1])
+                    for k in ("expected_account", "account_id")
+                ) or any(
+                    layer.get(k) not in (None, attempt[2])
+                    for k in ("expected_recipient", "wxid")
+                ):
+                    raise ValueError("Receipt account or recipient binding mismatch")
+                if layer.get("request_id") not in (None, request_id, attempt[0]):
+                    raise ValueError("Receipt request binding mismatch")
+                reported = (
+                    layer.get("status")
+                    or layer.get("submission_state")
+                    or layer.get("receipt_state")
+                )
+                if isinstance(reported, str) and reported in {
+                    "delivered",
+                    "delivered_verified",
+                    "submitted_unconfirmed",
+                    "status_unknown",
+                    "failed",
+                    "not_submitted",
+                }:
+                    statuses.add(reported)
+                if layer.get("reason") in (
+                    "native_send_source_unavailable",
+                    "wechat_in_foreground",
+                    "background_navigation_unavailable",
+                ):
+                    reason = layer["reason"]
+            if statuses:
+                status = statuses.pop() if len(statuses) == 1 else "status_unknown"
                 await self._db.execute(
-                    "UPDATE submissions SET status=? WHERE request_id=?",
-                    (status, request_id),
+                    "UPDATE submissions SET status=?, reason=? WHERE request_id=?",
+                    (status, reason, request_id),
                 )
                 await self._db.commit()
+                receipt = {**receipt, "status": status, "reason": reason}
         return receipt
 
     async def send_by_session(

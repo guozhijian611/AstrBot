@@ -64,6 +64,8 @@ If audio retrieval reports `voice_data not found` / `source_database_access_paus
 
 When receiving is unavailable, dashboard errors and AstrBot logs distinguish daemon, account, and receiver failures. `stage=profile_fetch` identifies upstream adaptation retrieval; `stage=profile_verify` identifies adaptation verification. Stages come from a fixed allowlist; arbitrary upstream text, account identifiers, and credentials are omitted. Use the official `wechat-use` commands and local `~/.wx-rs/wechatd.log` for underlying diagnostics. The adapter reconnects after recovery without replaying old messages.
 
+Submission logs and the adapter journal retain fixed refusal codes such as `native_send_source_unavailable`. Nested CLI `receipt` responses are checked against the saved account, recipient, and original request before updating status. An explicit `not_submitted` is preserved and never automatically resubmitted.
+
 ## Tests
 
 ```bash
