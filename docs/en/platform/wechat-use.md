@@ -62,6 +62,8 @@ AstrBot access controls, wake rules and session isolation remain in effect. Run 
 
 If audio retrieval reports `voice_data not found` / `source_database_access_paused`, upstream has no usable verified audio source for that message. Existing transcripts remain usable, otherwise media is marked unavailable. Switching STT providers cannot repair missing source audio. Do not open the original WeChat databases directly.
 
+When receiving is unavailable, dashboard errors and AstrBot logs distinguish daemon, account, and receiver failures. `stage=profile_fetch` identifies upstream adaptation retrieval; `stage=profile_verify` identifies adaptation verification. Stages come from a fixed allowlist; arbitrary upstream text, account identifiers, and credentials are omitted. Use the official `wechat-use` commands and local `~/.wx-rs/wechatd.log` for underlying diagnostics. The adapter reconnects after recovery without replaying old messages.
+
 ## Tests
 
 ```bash

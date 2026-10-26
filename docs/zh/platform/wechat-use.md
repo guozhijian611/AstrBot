@@ -85,6 +85,8 @@ receipt = await event.adapter.reconcile_submission(original_adapter_request_id)
 
 若本机语音接口返回 `voice_data not found` / `source_database_access_paused`，表示上游没有为该语音提供可用的受验证读取路径。可使用事件中已有的转写；没有转写时会显示媒体不可用。切换 STT 提供商不能修复底层取音频失败，也不要打开或直接读取微信原库。
 
+接收端不可用时，管理面板的错误详情及 AstrBot 日志会区分后台、账号和读取故障。`stage=profile_fetch` 表示上游适配资料获取阶段失败，`stage=profile_verify` 表示资料验证阶段失败；阶段值只从固定列表中选取，不写入上游任意文本、账号或凭据。底层详细诊断仍以 `wechat-use` 官方命令和本机 `~/.wx-rs/wechatd.log` 为准。恢复后适配器自动重连，不补发旧消息。
+
 ## 验证
 
 ```bash

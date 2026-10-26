@@ -30,6 +30,10 @@ from .outbound import prepare_outbound
 from .wechat_use_event import WechatUseMessageEvent
 
 
+class WechatUseHealthError(RuntimeError):
+    """Expose only locally constructed, safe Bridge health diagnostics."""
+
+
 @register_platform_adapter(
     "wechat_use",
     "Local macOS WeChat via wechat-use HTTP Bridge",
@@ -147,24 +151,42 @@ class WechatUseAdapter(Platform):
             RuntimeError: The Bridge is incompatible or WeChat is not ready.
         """
         if self._http is None:
-            raise RuntimeError("wechat-use adapter is not running")
+            raise WechatUseHealthError("wechat-use adapter is not running")
         async with self._http.get(
             f"{self.base_url}/health", allow_redirects=False
         ) as response:
             if response.status != 200:
-                raise RuntimeError(f"wechat-use health HTTP {response.status}")
+                raise WechatUseHealthError(f"wechat-use health HTTP {response.status}")
             health = await response.json()
         if not isinstance(health, dict) or "bridge_version" not in health:
-            raise RuntimeError("wechat-use requires the native Bridge shape")
-        if (
-            not isinstance(health.get("daemon"), dict)
-            or not isinstance(health.get("wechat"), dict)
-            or not isinstance(health.get("receive_readiness"), dict)
-            or health["daemon"].get("alive") is not True
-            or health["wechat"].get("account_state") != "ready"
-            or health["receive_readiness"].get("ready") is not True
+            raise WechatUseHealthError("wechat-use requires the native Bridge shape")
+        if not all(
+            isinstance(health.get(field), dict)
+            for field in ("daemon", "wechat", "receive_readiness")
         ):
-            raise RuntimeError("wechat-use daemon, account or receiver is not ready")
+            raise WechatUseHealthError("wechat-use health metadata is invalid")
+        if health["daemon"].get("alive") is not True:
+            raise WechatUseHealthError("wechat-use daemon is not ready")
+        if health["wechat"].get("account_state") != "ready":
+            raise WechatUseHealthError("wechat-use account is not ready")
+        if health["receive_readiness"].get("ready") is not True:
+            source = health["receive_readiness"].get("source")
+            refusal = (
+                source.get("last_capture_refusal") if isinstance(source, dict) else None
+            )
+            stage = refusal.get("capture_step") if isinstance(refusal, dict) else None
+            # Never include arbitrary upstream text, paths or credentials in errors.
+            if not isinstance(stage, str) or stage not in {
+                "profile_fetch",
+                "profile_verify",
+                "capture",
+                "metadata_load",
+                "adaptation",
+            }:
+                stage = "unknown"
+            raise WechatUseHealthError(
+                f"wechat-use receiver is not ready (stage={stage})"
+            )
         return health
 
     async def run(self) -> None:
@@ -175,6 +197,10 @@ class WechatUseAdapter(Platform):
             while self._running:
                 try:
                     await self.check_health()
+                    if self.last_error is not None:
+                        logger.info(
+                            "wechat-use receiver recovered; reconnecting event stream"
+                        )
                     self.clear_errors()
                     assert self._http is not None
                     async with self._http.get(
@@ -212,7 +238,11 @@ class WechatUseAdapter(Platform):
                     RuntimeError,
                 ) as exc:
                     # Avoid logging raw responses, chat content or credentials.
-                    error = f"wechat-use receive unavailable ({type(exc).__name__})"
+                    error = (
+                        str(exc)
+                        if isinstance(exc, WechatUseHealthError)
+                        else f"wechat-use receive unavailable ({type(exc).__name__})"
+                    )
                     if self.last_error is None or self.last_error.message != error:
                         self.record_error(error)
                         logger.warning(error)

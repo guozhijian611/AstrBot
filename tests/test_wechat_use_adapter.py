@@ -412,6 +412,81 @@ async def test_health_readiness_and_auth(adapter, bridge):
     assert bridge["requests"] == []
 
 
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    [
+        ("profile_fetch", "profile_fetch"),
+        ("profile_verify", "profile_verify"),
+        ("private-account-token", "unknown"),
+        ({"private": "content"}, "unknown"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_health_diagnostics_expose_only_known_stages(
+    adapter, bridge, stage, expected
+):
+    bridge["health"]["receive_readiness"] = {
+        "ready": False,
+        "source": {
+            "last_capture_refusal": {"capture_step": stage, "reason": "private-token"}
+        },
+    }
+    with pytest.raises(RuntimeError) as error:
+        await adapter.check_health()
+    assert str(error.value) == f"wechat-use receiver is not ready (stage={expected})"
+    assert adapter._event_queue.empty()
+    assert bridge["requests"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("daemon", {"alive": False}, "wechat-use daemon is not ready"),
+        (
+            "wechat",
+            {"account_state": "private-account"},
+            "wechat-use account is not ready",
+        ),
+        ("receive_readiness", None, "wechat-use health metadata is invalid"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_health_diagnostics_distinguish_service_failures(
+    adapter, bridge, field, value, message
+):
+    bridge["health"][field] = value
+    with pytest.raises(RuntimeError) as error:
+        await adapter.check_health()
+    assert str(error.value) == message
+
+
+@pytest.mark.asyncio
+async def test_receive_failure_stage_reaches_dashboard_statistics(bridge, tmp_path):
+    bridge["health"]["receive_readiness"] = {
+        "ready": False,
+        "source": {"last_capture_refusal": {"capture_step": "profile_fetch"}},
+    }
+    adapter = WechatUseAdapter(
+        {**CONFIG, "wechat_use_bridge_url": bridge["url"]}, {}, asyncio.Queue()
+    )
+    adapter.state_path = tmp_path / "health.sqlite3"
+    task = asyncio.create_task(adapter.run())
+    try:
+        for _ in range(100):
+            if adapter.last_error is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert adapter.get_stats()["last_error"]["message"] == (
+            "wechat-use receiver is not ready (stage=profile_fetch)"
+        )
+        assert bridge["streams"] == []
+        assert bridge["requests"] == []
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 @pytest.mark.asyncio
 async def test_wrong_bridge_shape_is_rejected(adapter, bridge):
     bridge["health"] = {"status": "connected"}
