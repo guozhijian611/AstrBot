@@ -34,7 +34,7 @@ from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
 from astrbot.core.platform.manager import PlatformManager
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
-from astrbot.core.platform.platform import Platform
+from astrbot.core.platform.platform import Platform, PlatformStatus
 from astrbot.core.platform.sources.wechat_use.wechat_use_adapter import WechatUseAdapter
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.star.star_handler import star_handlers_registry
@@ -372,13 +372,31 @@ async def test_sse_reconnect_uses_cursor_and_deduplicates(bridge, tmp_path):
         second = await asyncio.wait_for(adapter._event_queue.get(), timeout=8)
         assert first.message_obj.message_id != second.message_obj.message_id
         assert adapter._event_queue.empty()
-        assert bridge["streams"][:2] == [adapter._started_at, original["create_time"]]
+        assert bridge["streams"][:2] == [
+            adapter._receive_started_at,
+            original["create_time"],
+        ]
     finally:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
     assert adapter._db is None
     assert adapter._http is None
+
+
+def test_receive_boundary_preserves_platform_statistics():
+    adapter = WechatUseAdapter(CONFIG, {}, asyncio.Queue())
+    assert adapter.get_stats()["started_at"] is None
+    adapter.status = PlatformStatus.RUNNING
+    started_at = adapter.get_stats()["started_at"]
+    assert isinstance(started_at, str)
+    adapter.record_error("Fixture receiver unavailable")
+    stats = adapter.get_stats()
+    assert stats["status"] == "error"
+    assert stats["started_at"] == started_at
+    assert stats["last_error"]["message"] == "Fixture receiver unavailable"
+    adapter.clear_errors()
+    assert adapter.get_stats()["status"] == "running"
 
 
 @pytest.mark.asyncio
@@ -1090,10 +1108,16 @@ async def test_legacy_submission_migration_does_not_invent_an_account(adapter):
 
 
 @pytest.mark.asyncio
-async def test_upstream_audio_refusal_is_visible_without_private_diagnostics(adapter, monkeypatch):
+async def test_upstream_audio_refusal_is_visible_without_private_diagnostics(
+    adapter, monkeypatch
+):
     from astrbot.core.platform.sources.wechat_use.client import WechatUseOperationError
 
-    monkeypatch.setattr(adapter.client, "run_cli", AsyncMock(side_effect=WechatUseOperationError("source_database_access_paused")))
+    monkeypatch.setattr(
+        adapter.client,
+        "run_cli",
+        AsyncMock(side_effect=WechatUseOperationError("source_database_access_paused")),
+    )
     await adapter.handle_batch(batch(row(message_kind="audio")))
     event = adapter._event_queue.get_nowait()
     assert "source_database_access_paused" in event.message_str
@@ -1101,14 +1125,24 @@ async def test_upstream_audio_refusal_is_visible_without_private_diagnostics(ada
 
 
 def test_literal_xml_in_real_text_is_preserved_and_invalid_kinds_are_skipped(adapter):
-    message = adapter.convert_message(row(display_text="<html>synthetic coding question</html>"))
+    message = adapter.convert_message(
+        row(display_text="<html>synthetic coding question</html>")
+    )
     assert message.message_str == "<html>synthetic coding question</html>"
     assert adapter.convert_message(row(message_kind={"invalid": True})) is None
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_does_not_accept_other_account_receipts(adapter, monkeypatch):
+async def test_reconciliation_does_not_accept_other_account_receipts(
+    adapter, monkeypatch
+):
     original = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
-    monkeypatch.setattr(adapter.client, "run_cli", AsyncMock(return_value=(0, {"status": "delivered", "expected_account": "wxid_other"})))
+    monkeypatch.setattr(
+        adapter.client,
+        "run_cli",
+        AsyncMock(
+            return_value=(0, {"status": "delivered", "expected_account": "wxid_other"})
+        ),
+    )
     with pytest.raises(ValueError, match="binding mismatch"):
         await adapter.reconcile_submission(original["request_id"])

@@ -91,8 +91,8 @@ class WechatUseAdapter(Platform):
         self._db: aiosqlite.Connection | None = None
         self._http: aiohttp.ClientSession | None = None
         self._running = False
-        self._started_at = int(time.time())
-        self._cursor = self._started_at
+        self._receive_started_at = int(time.time())
+        self._cursor = self._receive_started_at
         self.client = WechatUseClient(self)
 
     def meta(self) -> PlatformMetadata:
@@ -169,7 +169,7 @@ class WechatUseAdapter(Platform):
 
     async def run(self) -> None:
         self._running = True
-        self._started_at = self._cursor = int(time.time())
+        self._receive_started_at = self._cursor = int(time.time())
         try:
             await self.initialize()
             while self._running:
@@ -293,7 +293,7 @@ class WechatUseAdapter(Platform):
         timestamp = row.get("create_time")
         if (
             not isinstance(timestamp, int)
-            or timestamp < max(self._started_at, time.time() - 300)
+            or timestamp < max(self._receive_started_at, time.time() - 300)
             or timestamp > time.time() + 30
         ):
             return None
