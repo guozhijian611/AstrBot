@@ -544,6 +544,7 @@ class WechatUseAdapter(Platform):
         )
         await self._db.commit()
         status, bridge_id, reason = "status_unknown", None, None
+        can_reconcile = True
         try:
             http_status = 200
             if part["kind"] == "text" and not part.get("mentions"):
@@ -615,8 +616,9 @@ class WechatUseAdapter(Platform):
                         reason = layer["reason"]
                 if bound and len(statuses) == 1:
                     status = statuses.pop()
-                else:
+                elif not bound or len(statuses) > 1:
                     reason = None
+                    can_reconcile = False
             if http_status >= 400 and status not in {"failed", "not_submitted"}:
                 status = "status_unknown"
         except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError, OSError):
@@ -628,6 +630,17 @@ class WechatUseAdapter(Platform):
                 (status, str(bridge_id) if bridge_id else None, reason, request_id),
             )
             await self._db.commit()
+        if status == "status_unknown" and can_reconcile:
+            # Read the original receipt once; this never retries a submission.
+            try:
+                await asyncio.wait_for(self.reconcile_submission(request_id), timeout=5)
+                async with self._db.execute(
+                    "SELECT status, reason FROM submissions WHERE request_id=?",
+                    (request_id,),
+                ) as cursor:
+                    status, reason = await cursor.fetchone()
+            except (OSError, RuntimeError, TimeoutError, ValueError):
+                pass
         logger.info(
             "wechat-use submission %s: %s (reason=%s)",
             request_id,

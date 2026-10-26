@@ -66,6 +66,8 @@ When receiving is unavailable, dashboard errors and AstrBot logs distinguish dae
 
 Submission logs and the adapter journal retain fixed refusal codes such as `native_send_source_unavailable`. Nested CLI `receipt` responses are checked against the saved account, recipient, and original request before updating status. An explicit `not_submitted` is preserved and never automatically resubmitted.
 
+For an ambiguous submission response, the adapter reads the original receipt at most once with a five-second timeout. An unavailable receipt preserves the unknown outcome; it never resends or starts a new send task.
+
 ## Tests
 
 ```bash

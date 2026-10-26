@@ -89,6 +89,8 @@ receipt = await event.adapter.reconcile_submission(original_adapter_request_id)
 
 发送日志和适配器自有记录保留固定的拒绝原因码（如 `native_send_source_unavailable`）。CLI 的嵌套 `receipt` 也会核验账号、收件人和原请求，再更新提交状态；明确的 `not_submitted` 不再误标成未知，也不会自动补发。
 
+发送返回不明确时，适配器最多用原请求 ID 自动读取一次回执（5 秒超时）。核对失败仍保留未知状态，不重发，也不启动新的发送任务。
+
 ## 验证
 
 ```bash

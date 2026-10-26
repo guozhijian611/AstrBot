@@ -684,6 +684,87 @@ async def test_nested_original_receipt_binding_cannot_update_journal(
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_post_checks_original_receipt_once_without_resend(
+    adapter, bridge, monkeypatch
+):
+    bridge["malformed"] = True
+    cli = AsyncMock(
+        return_value=(
+            0,
+            {
+                "account_id": SELF,
+                "receipt": {
+                    "account_id": SELF,
+                    "wxid": ROOM,
+                    "submission_state": "not_submitted",
+                    "reason": "native_send_source_unavailable",
+                },
+            },
+        )
+    )
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    with pytest.raises(RuntimeError, match="native_send_source_unavailable"):
+        await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    assert len(bridge["requests"]) == 1
+    assert cli.await_count == 1
+    assert cli.call_args.args[0] == "send-receipt"
+    async with adapter._db.execute(
+        "SELECT request_id, status FROM submissions"
+    ) as cursor:
+        request_id, status = await cursor.fetchone()
+    assert status == "not_submitted"
+    assert (
+        cli.call_args.args[cli.call_args.args.index("--request-id") + 1] == request_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_send_failed_envelope_checks_original_receipt(
+    adapter, bridge, monkeypatch
+):
+    bridge["status"] = 503
+    bridge["receipt"] = {
+        "ok": False,
+        "status": "send_failed",
+        "reason": "native_send_source_unavailable",
+        "error": "private explanation",
+    }
+    cli = AsyncMock(
+        return_value=(
+            0,
+            {
+                "receipt": {
+                    "account_id": SELF,
+                    "wxid": ROOM,
+                    "submission_state": "not_submitted",
+                    "reason": "native_send_source_unavailable",
+                }
+            },
+        )
+    )
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    with pytest.raises(RuntimeError, match="native_send_source_unavailable"):
+        await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    assert len(bridge["requests"]) == 1
+    assert cli.await_count == 1
+    assert cli.call_args.args[0] == "send-receipt"
+
+
+@pytest.mark.asyncio
+async def test_original_receipt_timeout_leaves_unknown_without_resend(
+    adapter, bridge, monkeypatch
+):
+    bridge["malformed"] = True
+    cli = AsyncMock(side_effect=TimeoutError)
+    monkeypatch.setattr(adapter.client, "run_cli", cli)
+    result = await adapter.send_message(ROOM, MessageChain([Plain("fixture")]))
+    assert result["status"] == "status_unknown"
+    assert len(bridge["requests"]) == 1
+    assert cli.await_count == 1
+    assert cli.call_args.args[0] == "send-receipt"
+
+
+@pytest.mark.asyncio
 async def test_outbound_scope_and_components(adapter, bridge):
     for recipient in [OTHER, "different@chatroom", ""]:
         with pytest.raises(ValueError, match="scope"):
@@ -1032,7 +1113,7 @@ async def test_uncertain_media_stops_remaining_parts_without_retry(
     )
     assert result["status"] == "status_unknown"
     assert result["submitted_parts"] == 2
-    assert cli.await_count == 1
+    assert [call.args[0] for call in cli.call_args_list] == ["send", "send-receipt"]
     assert [r["text"] for r in bridge["requests"]] == ["first"]
 
 
